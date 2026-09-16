@@ -1,0 +1,18 @@
+# Environment
+.env
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Data / indexes / cloned repos
+data/
+*.log
+
+# IDE
+.vscode/
