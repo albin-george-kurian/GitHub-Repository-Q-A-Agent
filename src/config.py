@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -6,12 +6,27 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # The project's .env wins over inherited OS variables, so `OPENAI_API_KEY=` (empty) in .env
+        # really disables OpenAI even if a stale key is set machine-wide. Without a .env, OS
+        # variables still apply (e.g. in deployments).
+        return init_settings, dotenv_settings, env_settings, file_secret_settings
+
     # LLM (Groq). Optional at load time so indexing and /health work without it;
     # get_llm() raises a clear ConfigurationError when it's missing.
     groq_api_key: str | None = None
-    groq_model: str = "llama-3.3-70b-versatile"
-    # Smaller, faster model for housekeeping calls (question rewriting, summaries, memory extraction)
-    groq_fast_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "openai/gpt-oss-120b"
+    # Model for housekeeping calls (question rewriting, summaries, memory extraction). The rewrite
+    # decides what gets retrieved, so the default favours quality; set a smaller model to save quota.
+    groq_fast_model: str = "openai/gpt-oss-120b"
 
     # Embeddings
     openai_api_key: str | None = None

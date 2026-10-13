@@ -32,6 +32,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _rejected_key_message(exc: BaseException) -> str | None:
+    """Readable message when OpenAI or Groq rejects the configured API key (HTTP 401)."""
+    while exc is not None:
+        if type(exc).__name__ == "AuthenticationError":
+            provider = type(exc).__module__.split(".")[0]
+            if provider == "openai":
+                return (
+                    "OpenAI rejected OPENAI_API_KEY (invalid or revoked). Replace it, or leave "
+                    "OPENAI_API_KEY empty in .env to use the free local embedding model, then restart the API."
+                )
+            if provider == "groq":
+                return "Groq rejected GROQ_API_KEY (invalid or revoked). Update it in .env and restart the API."
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 def _error(status: int, exc: Exception, code: str | None = None) -> HTTPException:
     # X-Error-Code lets clients tell apart errors that share a status (e.g. the two 404s).
     return HTTPException(status_code=status, detail=str(exc), headers={"X-Error-Code": code} if code else None)
@@ -46,6 +62,8 @@ def index_repo(request: IndexRequest) -> IndexResponse:
     except ConfigurationError as exc:
         raise _error(503, exc, "not_configured") from exc
     except Exception as exc:
+        if message := _rejected_key_message(exc):
+            raise HTTPException(status_code=503, detail=message, headers={"X-Error-Code": "not_configured"}) from exc
         logger.exception("Indexing failed for %s", request.repo_url)
         raise HTTPException(status_code=502, detail=f"Indexing failed: {exc}") from exc
 
@@ -69,6 +87,8 @@ def query_repo(
     except ConfigurationError as exc:
         raise _error(503, exc, "not_configured") from exc
     except Exception as exc:
+        if message := _rejected_key_message(exc):
+            raise HTTPException(status_code=503, detail=message, headers={"X-Error-Code": "not_configured"}) from exc
         logger.exception("Query failed for %s", request.repo_url)
         raise HTTPException(status_code=502, detail=f"LLM or embedding provider error: {exc}") from exc
 
