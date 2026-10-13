@@ -1,18 +1,31 @@
-# Environment
+# Environment / secrets
 .env
+.env.*
+!.env.example
 venv/
 .venv/
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Data / indexes / cloned repos
 data/
 *.log
 
-# IDE
+# Frontend (Node / Vite)
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+npm-debug.log*
+
+# IDE / OS
 .vscode/
+.idea/
+.DS_Store
+Thumbs.db
