@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api";
 import Conversation from "./components/Conversation";
+import Logo from "./components/Logo";
 import RepoPanel from "./components/RepoPanel";
 import { loadRecentRepos, removeRecentRepo, saveRecentRepo } from "./storage";
 import type { ChatMessage, IndexStatus } from "./types";
@@ -28,11 +29,12 @@ export default function App() {
     setThreads((prev) => ({ ...prev, [repo]: fn(prev[repo] ?? []) }));
   }, []);
 
-  const indexRepo = useCallback(async (url: string, force: boolean) => {
+  // Always rebuilds, so answers reflect the repo's current default branch.
+  const indexRepo = useCallback(async (url: string) => {
     setActiveRepo(url);
-    setStatus({ kind: "indexing", startedAt: Date.now(), force });
+    setStatus({ kind: "indexing", startedAt: Date.now() });
     try {
-      const result = await api.index({ repo_url: url, force_reindex: force });
+      const result = await api.index({ repo_url: url, force_reindex: true });
       setStatus({ kind: "ready", result });
       setRecentRepos((prev) => saveRecentRepo(url, prev));
       setBackendDown(false);
@@ -90,8 +92,10 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <img src="/favicon.svg" alt="" width={24} height={24} />
-          <h1>Repo Q&amp;A</h1>
+          <Logo size={30} />
+          <h1>
+            Repo <span className="brand-accent">Q&amp;A</span>
+          </h1>
         </div>
         <p className="tagline">Grounded answers about any public GitHub repository</p>
       </header>
@@ -116,7 +120,7 @@ export default function App() {
           messages={messages}
           disabled={status.kind === "indexing"}
           onAsk={ask}
-          onIndexRequested={() => activeRepo && indexRepo(activeRepo, false)}
+          onIndexRequested={() => activeRepo && indexRepo(activeRepo)}
         />
       </div>
     </div>

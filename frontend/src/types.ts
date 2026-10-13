@@ -2,7 +2,7 @@ import type { IndexResponse } from "./api";
 
 export type IndexStatus =
   | { kind: "idle" }
-  | { kind: "indexing"; startedAt: number; force: boolean }
+  | { kind: "indexing"; startedAt: number }
   | { kind: "ready"; result: IndexResponse | null } // null: picked from history, not re-checked
   | { kind: "error"; message: string };
 
