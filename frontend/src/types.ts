@@ -1,10 +1,9 @@
-import type { IndexResponse } from "./api";
-
 export type IndexStatus =
   | { kind: "idle" }
-  | { kind: "indexing"; startedAt: number }
-  | { kind: "ready"; result: IndexResponse | null } // null: picked from history, not re-checked
-  | { kind: "error"; message: string };
+  | { kind: "indexing" }
+  // summary is null when the repo was picked from history rather than indexed just now
+  | { kind: "ready"; summary: { numChunks: number | null; seconds: number } | null }
+  | { kind: "failed"; message: string; cancelled: boolean };
 
 export interface ChatMessage {
   id: string;

@@ -62,11 +62,17 @@ in the backend `.env`.
 
 ### API
 
-| Method | Path      | Body                             | Returns                                         |
-|--------|-----------|----------------------------------|-------------------------------------------------|
-| GET    | `/health` | –                                | `{"status": "ok"}`                              |
-| POST   | `/index`  | `{"repo_url", "force_reindex"?}` | `{"repo_url", "reused_existing", "num_chunks"}` |
-| POST   | `/query`  | `{"repo_url", "question", "chat_id"?}` | `{"answer", "sources", "chat_id", "standalone_question", "memory_saved"}` |
+| Method | Path                         | Body                                   | Returns                                                                    |
+|--------|------------------------------|----------------------------------------|----------------------------------------------------------------------------|
+| GET    | `/health`                    | –                                      | `{"status": "ok"}`                                                         |
+| POST   | `/index`                     | `{"repo_url", "force_reindex"?}`       | `202` indexing job (starts one, or joins the run already in progress)      |
+| GET    | `/index/jobs/{id}`           | –                                      | Job status: steps, progress (0–1), stats, language breakdown, activity log |
+| POST   | `/index/jobs/{id}/cancel`    | –                                      | `202` job; stops at the next step or embedding batch                       |
+| POST   | `/query`                     | `{"repo_url", "question", "chat_id"?}` | `{"answer", "sources", "chat_id", "standalone_question", "memory_saved"}`  |
+
+Indexing runs in the background (at most two repositories at once) so the UI can show live progress:
+clone → scan → chunk → embed → overview. Jobs are kept in memory; a cancelled or failed run never leaves a
+partial index behind.
 
 Chat and memory endpoints (all need an `X-User-Id` header): `GET /chats?repo_url=`, `GET /chats/{id}`,
 `DELETE /chats/{id}`, `GET /memories`, `POST /memories`, `DELETE /memories/{id}`, `DELETE /memories`.

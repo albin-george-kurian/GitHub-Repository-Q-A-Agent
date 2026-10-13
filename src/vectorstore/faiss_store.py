@@ -2,6 +2,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+from collections.abc import Callable, Sequence
 from threading import Lock
 
 from langchain_community.vectorstores import FAISS
@@ -32,10 +33,41 @@ def index_exists(repo_url: str) -> bool:
     return os.path.isfile(os.path.join(get_index_path(repo_url), _INDEX_FILE))
 
 
+def embed_chunks(
+    chunks: Sequence[Document],
+    embeddings: Embeddings,
+    on_progress: Callable[[int, int], None] | None = None,
+    batch_size: int = 32,  # small enough that progress moves smoothly on small repos
+) -> list[list[float]]:
+    """Embed chunk texts in batches, calling on_progress(done, total) before each batch and at the end.
+    on_progress may raise (e.g. IndexCancelled) to stop between batches."""
+    texts = [chunk.page_content for chunk in chunks]
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        if on_progress:
+            on_progress(start, len(texts))
+        vectors.extend(embeddings.embed_documents(texts[start : start + batch_size]))
+    if on_progress:
+        on_progress(len(texts), len(texts))
+    return vectors
+
+
 def build_and_save_index(
-    repo_url: str, chunks: list[Document], embeddings: Embeddings, overview: str | None = None
+    repo_url: str,
+    chunks: list[Document],
+    embeddings: Embeddings,
+    overview: str | None = None,
+    vectors: Sequence[Sequence[float]] | None = None,
 ) -> FAISS:
-    vector_store = FAISS.from_documents(chunks, embeddings)
+    """Build and persist the index. Pass `vectors` from embed_chunks to skip re-embedding."""
+    if vectors is None:
+        vector_store = FAISS.from_documents(chunks, embeddings)
+    else:
+        vector_store = FAISS.from_embeddings(
+            [(chunk.page_content, list(vec)) for chunk, vec in zip(chunks, vectors, strict=True)],
+            embeddings,
+            metadatas=[chunk.metadata for chunk in chunks],
+        )
     index_path = get_index_path(repo_url)
 
     # Write to a temp dir and swap it in, so a failed save never leaves a half-written index behind.

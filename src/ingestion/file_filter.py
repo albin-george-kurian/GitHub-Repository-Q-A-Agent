@@ -1,5 +1,8 @@
 import os
+from collections import Counter
+from collections.abc import Iterable
 
+from langchain_core.documents import Document
 from langchain_text_splitters import Language
 
 EXCLUDED_DIRS = {
@@ -37,6 +40,24 @@ LANGUAGE_BY_EXTENSION: dict[str, Language] = {
 DOC_EXTENSIONS = {".md", ".mdx", ".rst", ".txt", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini"}
 
 INCLUDED_EXTENSIONS = set(LANGUAGE_BY_EXTENSION) | DOC_EXTENSIONS
+
+# Display names for the language breakdown shown while indexing.
+LANGUAGE_NAMES: dict[str, str] = {
+    ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript", ".ts": "TypeScript", ".tsx": "TypeScript",
+    ".java": "Java", ".go": "Go", ".rs": "Rust", ".rb": "Ruby", ".php": "PHP",
+    ".cpp": "C++", ".hpp": "C++", ".c": "C", ".h": "C", ".cs": "C#", ".kt": "Kotlin", ".swift": "Swift",
+    ".scala": "Scala", ".md": "Markdown", ".mdx": "Markdown", ".rst": "reStructuredText", ".txt": "Text",
+    ".json": "JSON", ".yaml": "YAML", ".yml": "YAML", ".toml": "TOML", ".cfg": "INI", ".ini": "INI",
+}
+
+
+def language_breakdown(documents: Iterable[Document]) -> list[tuple[str, int]]:
+    """(language, bytes) pairs for the given documents, largest first."""
+    sizes: Counter[str] = Counter()
+    for doc in documents:
+        name = LANGUAGE_NAMES.get(doc.metadata.get("extension", ""), "Other")
+        sizes[name] += len(doc.page_content.encode("utf-8"))
+    return sizes.most_common()
 
 
 def iter_included_files(repo_path: str, max_file_size_bytes: int):

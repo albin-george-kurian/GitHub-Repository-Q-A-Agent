@@ -8,10 +8,45 @@ class IndexRequest(BaseModel):
     force_reindex: bool = Field(False, description="Rebuild the index even if one already exists")
 
 
-class IndexResponse(BaseModel):
+class IndexStepOut(BaseModel):
+    key: Literal["clone", "scan", "chunk", "embed", "overview"]
+    label: str
+    status: Literal["pending", "active", "done", "error", "cancelled"]
+    detail: str | None
+    duration: float | None = Field(None, description="Seconds spent in this step so far")
+
+
+class LanguageStat(BaseModel):
+    name: str
+    bytes: int
+
+
+class IndexStatsOut(BaseModel):
+    files: int
+    folders: int
+    bytes: int
+    chunks: int
+    embedded: int
+    languages: list[LanguageStat]
+
+
+class LogLine(BaseModel):
+    t: float = Field(..., description="Seconds since the job started")
+    message: str
+
+
+class IndexJobOut(BaseModel):
+    id: str
     repo_url: str
-    reused_existing: bool
+    status: Literal["running", "done", "error", "cancelled"]
+    progress: float = Field(..., ge=0, le=1)
+    elapsed: float
+    steps: list[IndexStepOut]
+    stats: IndexStatsOut
+    log: list[LogLine]
     num_chunks: int | None
+    reused_existing: bool
+    error: str | None
 
 
 class QueryRequest(BaseModel):

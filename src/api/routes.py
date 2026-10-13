@@ -6,8 +6,8 @@ from src.api.deps import get_user_id
 from src.api.schemas import (
     ChatDetail,
     ChatSummary,
+    IndexJobOut,
     IndexRequest,
-    IndexResponse,
     MemoryCreate,
     MemoryOut,
     MessageOut,
@@ -17,35 +17,19 @@ from src.api.schemas import (
 from src.config import settings
 from src.ingestion.repo_url import normalize_repo_url
 from src.memory import store
-from src.services import chat_service
+from src.services import chat_service, index_jobs
 from src.services.exceptions import (
     ChatNotFoundError,
     ConfigurationError,
+    IndexBusyError,
     InvalidRepoUrlError,
-    RepoIndexingError,
     RepoNotIndexedError,
+    rejected_key_message,
 )
-from src.services.qa_service import index_repository
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _rejected_key_message(exc: BaseException) -> str | None:
-    """Readable message when OpenAI or Groq rejects the configured API key (HTTP 401)."""
-    while exc is not None:
-        if type(exc).__name__ == "AuthenticationError":
-            provider = type(exc).__module__.split(".")[0]
-            if provider == "openai":
-                return (
-                    "OpenAI rejected OPENAI_API_KEY (invalid or revoked). Replace it, or leave "
-                    "OPENAI_API_KEY empty in .env to use the free local embedding model, then restart the API."
-                )
-            if provider == "groq":
-                return "Groq rejected GROQ_API_KEY (invalid or revoked). Update it in .env and restart the API."
-        exc = exc.__cause__ or exc.__context__
-    return None
 
 
 def _error(status: int, exc: Exception, code: str | None = None) -> HTTPException:
@@ -53,23 +37,33 @@ def _error(status: int, exc: Exception, code: str | None = None) -> HTTPExceptio
     return HTTPException(status_code=status, detail=str(exc), headers={"X-Error-Code": code} if code else None)
 
 
-@router.post("/index", response_model=IndexResponse)
-def index_repo(request: IndexRequest) -> IndexResponse:
+@router.post("/index", response_model=IndexJobOut, status_code=202)
+def index_repo(request: IndexRequest) -> IndexJobOut:
+    """Start indexing in the background (or join the run already in progress for this repo).
+    Poll GET /index/jobs/{id} for live progress."""
     try:
-        result = index_repository(str(request.repo_url), request.force_reindex)
-    except (InvalidRepoUrlError, RepoIndexingError) as exc:
+        job = index_jobs.start(str(request.repo_url), request.force_reindex)
+    except InvalidRepoUrlError as exc:
         raise _error(400, exc) from exc
-    except ConfigurationError as exc:
-        raise _error(503, exc, "not_configured") from exc
-    except Exception as exc:
-        if message := _rejected_key_message(exc):
-            raise HTTPException(status_code=503, detail=message, headers={"X-Error-Code": "not_configured"}) from exc
-        logger.exception("Indexing failed for %s", request.repo_url)
-        raise HTTPException(status_code=502, detail=f"Indexing failed: {exc}") from exc
+    except IndexBusyError as exc:
+        raise _error(429, exc, "index_busy") from exc
+    return IndexJobOut(**index_jobs.snapshot(job))
 
-    return IndexResponse(
-        repo_url=result.repo_url, reused_existing=result.reused_existing, num_chunks=result.num_chunks
-    )
+
+@router.get("/index/jobs/{job_id}", response_model=IndexJobOut)
+def get_index_job(job_id: str) -> IndexJobOut:
+    job = index_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Indexing job not found", headers={"X-Error-Code": "job_not_found"})
+    return IndexJobOut(**index_jobs.snapshot(job))
+
+
+@router.post("/index/jobs/{job_id}/cancel", response_model=IndexJobOut, status_code=202)
+def cancel_index_job(job_id: str) -> IndexJobOut:
+    job = index_jobs.cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Indexing job not found", headers={"X-Error-Code": "job_not_found"})
+    return IndexJobOut(**index_jobs.snapshot(job))
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -87,7 +81,7 @@ def query_repo(
     except ConfigurationError as exc:
         raise _error(503, exc, "not_configured") from exc
     except Exception as exc:
-        if message := _rejected_key_message(exc):
+        if message := rejected_key_message(exc):
             raise HTTPException(status_code=503, detail=message, headers={"X-Error-Code": "not_configured"}) from exc
         logger.exception("Query failed for %s", request.repo_url)
         raise HTTPException(status_code=502, detail=f"LLM or embedding provider error: {exc}") from exc

@@ -1,11 +1,15 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
+import type { IndexJob } from "../api";
+import { formatDuration } from "../languages";
 import { isGithubRepoUrl, repoLabel } from "../repoUrl";
 import type { IndexStatus } from "../types";
 
 interface Props {
   activeRepo: string | null;
   status: IndexStatus;
+  /** Live job while indexing, for the compact progress line. */
+  job: IndexJob | null;
   recentRepos: string[];
   onIndex: (url: string) => void;
   onSelectRecent: (url: string) => void;
@@ -14,19 +18,10 @@ interface Props {
   children?: ReactNode;
 }
 
-function useElapsedSeconds(startedAt: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (startedAt === null) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [startedAt]);
-  return startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
-}
-
 export default function RepoPanel({
   activeRepo,
   status,
+  job,
   recentRepos,
   onIndex,
   onSelectRecent,
@@ -35,7 +30,6 @@ export default function RepoPanel({
 }: Props) {
   const [url, setUrl] = useState(activeRepo ?? "");
   const indexing = status.kind === "indexing";
-  const elapsed = useElapsedSeconds(indexing ? status.startedAt : null);
 
   useEffect(() => {
     if (activeRepo) setUrl(activeRepo);
@@ -77,7 +71,7 @@ export default function RepoPanel({
         </button>
       </form>
 
-      <StatusCard status={status} elapsed={elapsed} activeRepo={activeRepo} />
+      <StatusCard status={status} job={job} activeRepo={activeRepo} />
 
       {children}
 
@@ -115,45 +109,49 @@ export default function RepoPanel({
   );
 }
 
-function StatusCard({ status, elapsed, activeRepo }: { status: IndexStatus; elapsed: number; activeRepo: string | null }) {
+function StatusCard({ status, job, activeRepo }: { status: IndexStatus; job: IndexJob | null; activeRepo: string | null }) {
+  const name = activeRepo ? repoLabel(activeRepo) : "";
   switch (status.kind) {
     case "idle":
       return null;
-    case "indexing":
+    case "indexing": {
+      const step = job?.steps.find((s) => s.status === "active");
+      const percent = Math.round((job?.progress ?? 0) * 100);
       return (
-        <div className="status status-busy" role="status">
-          <span className="spinner" aria-hidden />
-          <div>
-            <strong>Indexing {activeRepo ? repoLabel(activeRepo) : ""}</strong>
-            <p className="hint">
-              Cloning, chunking and embedding · {elapsed}s
-              <br />
-              Large repositories can take a few minutes.
-            </p>
+        <div className="status" role="status">
+          <div className="status-line">
+            <span className="status-name mono">{name}</span>
+            <span className="status-meta mono">{percent}%</span>
           </div>
+          <div className="mini-track">
+            <div className="progress-fill" style={{ width: `${percent}%` }} />
+          </div>
+          <p className="hint">{step?.label ?? "Starting…"}</p>
         </div>
       );
+    }
     case "ready":
       return (
-        <div className="status status-ok" role="status">
-          <span className="dot" aria-hidden />
-          <div>
-            <strong>{activeRepo ? repoLabel(activeRepo) : "Ready"}</strong>
-            <p className="hint">
-              {status.result === null
-                ? "Selected from history"
-                : status.result.reused_existing
-                  ? "Using existing index"
-                  : `Indexed ${status.result.num_chunks ?? 0} chunks`}
-            </p>
+        <div className="status" role="status">
+          <div className="status-line">
+            <span className="status-name mono">
+              <span className="dot" aria-hidden /> {name}
+            </span>
           </div>
+          <p className="hint">
+            {status.summary
+              ? `${status.summary.numChunks?.toLocaleString() ?? 0} chunks · indexed in ${formatDuration(status.summary.seconds)}`
+              : "Opened from history"}
+          </p>
         </div>
       );
-    case "error":
+    case "failed":
       return (
-        <div className="status status-err" role="alert">
-          <strong>Indexing failed</strong>
-          <p className="hint">{status.message}</p>
+        <div className={status.cancelled ? "status" : "status status-err"} role={status.cancelled ? "status" : "alert"}>
+          <div className="status-line">
+            <span className="status-name mono">{name}</span>
+          </div>
+          <p className="hint">{status.cancelled ? "Indexing cancelled" : "Indexing failed"}</p>
         </div>
       );
   }

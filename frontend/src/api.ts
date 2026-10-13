@@ -6,10 +6,36 @@ export interface IndexRequest {
   force_reindex?: boolean;
 }
 
-export interface IndexResponse {
+export type IndexStepKey = "clone" | "scan" | "chunk" | "embed" | "overview";
+export type IndexStepStatus = "pending" | "active" | "done" | "error" | "cancelled";
+
+export interface IndexStep {
+  key: IndexStepKey;
+  label: string;
+  status: IndexStepStatus;
+  detail: string | null;
+  duration: number | null;
+}
+
+export interface IndexJob {
+  id: string;
   repo_url: string;
-  reused_existing: boolean;
+  status: "running" | "done" | "error" | "cancelled";
+  progress: number;
+  elapsed: number;
+  steps: IndexStep[];
+  stats: {
+    files: number;
+    folders: number;
+    bytes: number;
+    chunks: number;
+    embedded: number;
+    languages: { name: string; bytes: number }[];
+  };
+  log: { t: number; message: string }[];
   num_chunks: number | null;
+  reused_existing: boolean;
+  error: string | null;
 }
 
 export interface QueryRequest {
@@ -53,7 +79,7 @@ export interface Memory {
   created_at: number;
 }
 
-export type ErrorCode = "repo_not_indexed" | "chat_not_found" | "not_configured";
+export type ErrorCode = "repo_not_indexed" | "chat_not_found" | "not_configured" | "index_busy" | "job_not_found";
 
 export class ApiError extends Error {
   constructor(
@@ -104,7 +130,10 @@ const json = (method: string, body: unknown): RequestInit => ({ method, body: JS
 
 export const api = {
   health: () => request<{ status: string }>("/health"),
-  index: (req: IndexRequest) => request<IndexResponse>("/index", json("POST", req)),
+  startIndex: (req: IndexRequest) => request<IndexJob>("/index", json("POST", req)),
+  getIndexJob: (id: string) => request<IndexJob>(`/index/jobs/${encodeURIComponent(id)}`),
+  cancelIndexJob: (id: string) =>
+    request<IndexJob>(`/index/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   query: (req: QueryRequest) => request<QueryResponse>("/query", json("POST", req)),
 
   listChats: (repoUrl: string) => request<ChatSummary[]>(`/chats?repo_url=${encodeURIComponent(repoUrl)}`),

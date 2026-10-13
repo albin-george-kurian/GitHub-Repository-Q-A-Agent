@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 import Markdown from "react-markdown";
 
 import { useGreeting } from "../greeting";
+import { formatDuration } from "../languages";
 import { repoLabel, sourceUrl } from "../repoUrl";
 import Logo from "./Logo";
 import type { ChatMessage } from "../types";
@@ -9,7 +10,8 @@ import type { ChatMessage } from "../types";
 interface Props {
   repoUrl: string | null;
   messages: ChatMessage[];
-  disabled: boolean;
+  /** Shown under the greeting right after indexing finishes. */
+  readySummary: { numChunks: number | null; seconds: number } | null;
   onAsk: (question: string) => void;
   onIndexRequested: () => void;
   onOpenMemory: () => void;
@@ -22,13 +24,20 @@ const EXAMPLES = [
   "What are the main modules and how do they interact?",
 ];
 
-export default function Conversation({ repoUrl, messages, disabled, onAsk, onIndexRequested, onOpenMemory }: Props) {
+export default function Conversation({
+  repoUrl,
+  messages,
+  readySummary,
+  onAsk,
+  onIndexRequested,
+  onOpenMemory,
+}: Props) {
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const greeting = useGreeting();
   const pending = messages.some((m) => m.pending);
-  const canAsk = !!repoUrl && !disabled && !pending;
+  const canAsk = !!repoUrl && !pending;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -59,8 +68,14 @@ export default function Conversation({ repoUrl, messages, disabled, onAsk, onInd
       <div className="messages" aria-live="polite">
         {messages.length === 0 && (
           <div className="empty">
-            <Logo size={64} className="empty-logo" />
+            <Logo size={40} className="empty-logo" />
             <h2 className="greeting">{greeting}</h2>
+            {repoUrl && readySummary && (
+              <p className="ready-line">
+                <span className="dot" aria-hidden /> Indexed {readySummary.numChunks?.toLocaleString() ?? 0} chunks in{" "}
+                {formatDuration(readySummary.seconds)}
+              </p>
+            )}
             {repoUrl ? (
               <>
                 <p>
@@ -109,7 +124,7 @@ export default function Conversation({ repoUrl, messages, disabled, onAsk, onInd
               autoGrow(e.target);
             }}
             onKeyDown={onKeyDown}
-            disabled={!repoUrl || disabled}
+            disabled={!repoUrl}
             aria-label="Question"
           />
           <button className="send-btn" type="submit" disabled={!canAsk || !draft.trim()} aria-label="Ask" title="Ask">
