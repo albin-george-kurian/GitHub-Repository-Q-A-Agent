@@ -3,33 +3,8 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.config import settings
-from src.embeddings.embedding_provider import get_embeddings
-from src.ingestion.document_loader import load_repo_documents
-from src.ingestion.repo_loader import clone_repo, cleanup_repo
-from src.processing.splitter import split_documents
-from src.rag.qa_chain import answer_question, build_qa_chain
-from src.vectorstore.faiss_store import build_and_save_index, index_exists, load_index
-
-
-def get_vector_store(repo_url: str, force_reindex: bool):
-    embeddings = get_embeddings()
-
-    if index_exists(repo_url) and not force_reindex:
-        print(f"Reusing existing index for {repo_url}")
-        return load_index(repo_url, embeddings)
-
-    print(f"Cloning {repo_url} ...")
-    local_path = clone_repo(repo_url)
-    try:
-        print("Loading and filtering files ...")
-        documents = load_repo_documents(local_path, settings.max_file_size_bytes)
-        print(f"Loaded {len(documents)} files. Splitting into chunks ...")
-        chunks = split_documents(documents, settings.chunk_size, settings.chunk_overlap)
-        print(f"Created {len(chunks)} chunks. Building embeddings + FAISS index ...")
-        return build_and_save_index(repo_url, chunks, embeddings)
-    finally:
-        cleanup_repo(local_path)
+from src.services.exceptions import RepoIndexingError, RepoNotIndexedError
+from src.services.qa_service import ask_question, index_repository
 
 
 def main():
@@ -39,16 +14,28 @@ def main():
     parser.add_argument("--force-reindex", action="store_true", help="Rebuild the index even if one exists")
     args = parser.parse_args()
 
-    vector_store = get_vector_store(args.repo_url, args.force_reindex)
-    chain = build_qa_chain(vector_store, settings.retriever_top_k)
+    try:
+        index_result = index_repository(args.repo_url, args.force_reindex)
+    except RepoIndexingError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    if index_result.reused_existing:
+        print(f"Reusing existing index for {args.repo_url}")
+    else:
+        print(f"Indexed {args.repo_url} ({index_result.num_chunks} chunks)")
 
     print("\nAnswering question ...\n")
-    result = answer_question(chain, args.question)
+    try:
+        result = ask_question(args.repo_url, args.question)
+    except RepoNotIndexedError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
 
     print("Answer:")
-    print(result["answer"])
+    print(result.answer)
     print("\nSources:")
-    for source in result["sources"]:
+    for source in result.sources:
         print(f"  - {source}")
 
 
