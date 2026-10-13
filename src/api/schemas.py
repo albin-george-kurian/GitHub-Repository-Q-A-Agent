@@ -14,7 +14,7 @@ class IndexResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     repo_url: HttpUrl = Field(..., description="URL of a previously indexed GitHub repository")
-    question: str = Field(..., min_length=1)
+    question: str = Field(..., min_length=1, max_length=2000)
 
 
 class QueryResponse(BaseModel):

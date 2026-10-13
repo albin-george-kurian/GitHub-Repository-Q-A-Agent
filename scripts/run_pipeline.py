@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.services.exceptions import RepoIndexingError, RepoNotIndexedError
+from src.services.exceptions import ConfigurationError, InvalidRepoUrlError, RepoIndexingError, RepoNotIndexedError
 from src.services.qa_service import ask_question, index_repository
 
 
@@ -16,7 +16,7 @@ def main():
 
     try:
         index_result = index_repository(args.repo_url, args.force_reindex)
-    except RepoIndexingError as exc:
+    except (InvalidRepoUrlError, RepoIndexingError) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
 
@@ -28,7 +28,7 @@ def main():
     print("\nAnswering question ...\n")
     try:
         result = ask_question(args.repo_url, args.question)
-    except RepoNotIndexedError as exc:
+    except (RepoNotIndexedError, ConfigurationError) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
 

@@ -6,8 +6,9 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # LLM (Groq)
-    groq_api_key: str
+    # LLM (Groq). Optional at load time so indexing and /health work without it;
+    # get_llm() raises a clear ConfigurationError when it's missing.
+    groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
 
     # Embeddings
@@ -34,6 +35,13 @@ class Settings(BaseSettings):
     @property
     def use_openai_embeddings(self) -> bool:
         return bool(self.openai_api_key)
+
+    @property
+    def embedding_model_id(self) -> str:
+        """Identifies the active embedding model; indexes are only valid for the model that built them."""
+        if self.use_openai_embeddings:
+            return f"openai:{self.openai_embedding_model}"
+        return f"hf:{self.hf_embedding_model}"
 
     @property
     def cors_origin_list(self) -> list[str]:

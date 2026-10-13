@@ -1,4 +1,6 @@
+from collections import defaultdict
 from dataclasses import dataclass
+from threading import Lock
 
 from git import GitCommandError
 
@@ -6,10 +8,14 @@ from src.config import settings
 from src.embeddings.embedding_provider import get_embeddings
 from src.ingestion.document_loader import load_repo_documents
 from src.ingestion.repo_loader import clone_repo, cleanup_repo
+from src.ingestion.repo_url import normalize_repo_url
 from src.processing.splitter import split_documents
 from src.rag.qa_chain import answer_question, build_qa_chain
 from src.services.exceptions import RepoIndexingError, RepoNotIndexedError
 from src.vectorstore.faiss_store import build_and_save_index, index_exists, load_index
+
+# One lock per repo so concurrent /index calls for the same repo don't clone and write twice.
+_index_locks: defaultdict[str, Lock] = defaultdict(Lock)
 
 
 @dataclass
@@ -27,29 +33,34 @@ class AnswerResult:
 
 def index_repository(repo_url: str, force_reindex: bool = False) -> IndexResult:
     """Clone, chunk, embed, and persist a FAISS index for a repo, or reuse an existing one."""
-    if index_exists(repo_url) and not force_reindex:
-        return IndexResult(repo_url=repo_url, reused_existing=True, num_chunks=None)
+    repo_url = normalize_repo_url(repo_url)
 
-    try:
-        local_path = clone_repo(repo_url)
-    except GitCommandError as exc:
-        raise RepoIndexingError(f"Failed to clone repository: {repo_url}") from exc
+    with _index_locks[repo_url]:
+        if index_exists(repo_url) and not force_reindex:
+            return IndexResult(repo_url=repo_url, reused_existing=True, num_chunks=None)
 
-    try:
-        documents = load_repo_documents(local_path, settings.max_file_size_bytes)
-        if not documents:
-            raise RepoIndexingError(f"No indexable source/doc files found in repository: {repo_url}")
+        try:
+            local_path = clone_repo(repo_url)
+        except GitCommandError as exc:
+            raise RepoIndexingError(
+                f"Failed to clone repository: {repo_url}. Check that it exists and is public."
+            ) from exc
 
-        chunks = split_documents(documents, settings.chunk_size, settings.chunk_overlap)
-        embeddings = get_embeddings()
-        build_and_save_index(repo_url, chunks, embeddings)
-        return IndexResult(repo_url=repo_url, reused_existing=False, num_chunks=len(chunks))
-    finally:
-        cleanup_repo(local_path)
+        try:
+            documents = load_repo_documents(local_path, settings.max_file_size_bytes)
+            if not documents:
+                raise RepoIndexingError(f"No indexable source/doc files found in repository: {repo_url}")
+
+            chunks = split_documents(documents, settings.chunk_size, settings.chunk_overlap)
+            build_and_save_index(repo_url, chunks, get_embeddings())
+            return IndexResult(repo_url=repo_url, reused_existing=False, num_chunks=len(chunks))
+        finally:
+            cleanup_repo(local_path)
 
 
 def ask_question(repo_url: str, question: str) -> AnswerResult:
     """Answer a question about a previously indexed repo."""
+    repo_url = normalize_repo_url(repo_url)
     if not index_exists(repo_url):
         raise RepoNotIndexedError(f"Repository has not been indexed yet: {repo_url}")
 
