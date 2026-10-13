@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     auto_memory: bool = True  # learn user preferences from what they say
     max_memories_per_user: int = 50
 
+    # GitHub REST API (MCP GitHub tools). Optional: without a token GitHub allows 60 requests/hour,
+    # with one 5,000/hour. A fine-grained token with read-only public access is enough.
+    github_token: str | None = None
+
     # API: comma-separated origins allowed to call the backend from a browser
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

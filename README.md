@@ -19,7 +19,7 @@ strictly in the repository's own content.
 Answers draw on several layers of memory, modelled on how assistants like Claude keep context:
 
 | Layer | What it does | Stored in |
-|---|---|---|
+| --- | --- | --- |
 | Recent turns | Follow-ups like "where is *that* tested?" are rewritten into a standalone question before searching, and recent turns are sent with the prompt | `data/memory.db` |
 | Running summary | Once a chat grows past `SUMMARIZE_AFTER_MESSAGES`, older turns are folded into a summary (in the background) | `data/memory.db` |
 | Saved chats | Every chat is persisted; reopen it from the sidebar and keep going | `data/memory.db` |
@@ -77,6 +77,51 @@ partial index behind.
 Chat and memory endpoints (all need an `X-User-Id` header): `GET /chats?repo_url=`, `GET /chats/{id}`,
 `DELETE /chats/{id}`, `GET /memories`, `POST /memories`, `DELETE /memories/{id}`, `DELETE /memories`.
 
+### MCP server
+
+The agent is also available as an [MCP](https://modelcontextprotocol.io) server (built with FastMCP), so AI
+clients such as Claude Code, Claude Desktop or Cursor can call it as tools. Repositories can be passed as a URL
+or as `owner/name`.
+
+| Tool | What it does |
+| --- | --- |
+| `ask_repository` | Answers a question about the code with file citations. Indexes the repo on first use, streaming progress |
+| `get_repo_info` | Description, stars, forks, language, topics, license, default branch, last push |
+| `search_issues` / `get_issue` | Search issues (text, `label:bug`, state); read one with its comments |
+| `list_pull_requests` / `get_pull_request` | Recent PRs (open/closed/merged); one PR with changed files and diffs |
+| `get_file_history` | Recent commits that touched a file or folder |
+| `list_releases` | Releases with dates and release notes |
+
+All tools except `ask_repository` are read-only calls to the GitHub API. They work without a token (60
+requests/hour); set `GITHUB_TOKEN` in `.env` for 5,000/hour. `ask_repository` uses the same `.env` settings
+as the web app (Groq key, embeddings).
+
+Connect it to **Claude Code** (use absolute paths; on macOS/Linux the interpreter is `venv/bin/python`):
+
+```bash
+claude mcp add repo-qa -- "<repo>/venv/Scripts/python.exe" "<repo>/scripts/mcp_server.py"
+```
+
+or to **Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "repo-qa": {
+      "command": "<repo>\\venv\\Scripts\\python.exe",
+      "args": ["<repo>\\scripts\\mcp_server.py"]
+    }
+  }
+}
+```
+
+For remote clients, run it over streamable HTTP instead (served at `http://127.0.0.1:8765/mcp`; keep it on
+localhost unless you put authentication in front of it):
+
+```bash
+python scripts/mcp_server.py --transport http --port 8765
+```
+
 ### Tests
 
 ```bash
@@ -103,4 +148,5 @@ python scripts/run_pipeline.py <repo_url> "<question>" --force-reindex
 - **Stage 1 (Foundation/MVP)**: CLI-based end-to-end RAG pipeline.
 - **Stage 2 (Backend API)**: FastAPI `/index` and `/query` endpoints.
 - **Frontend**: React + TypeScript (Vite) UI in [`frontend/`](frontend/).
+- **MCP server**: repository Q&A and GitHub tools for AI clients ([`src/mcp_server/`](src/mcp_server/)).
 - **Stage 3**: further improvements, planned.

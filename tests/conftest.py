@@ -1,3 +1,5 @@
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -12,7 +14,7 @@ from pydantic import Field
 from src.config import settings
 from src.memory import llm_tasks
 from src.rag import overview, qa_chain
-from src.services import chat_service, qa_service
+from src.services import chat_service, index_jobs, qa_service
 from src.vectorstore.faiss_store import build_and_save_index
 
 REPO = "https://github.com/acme/widgets"
@@ -77,3 +79,37 @@ def llm(monkeypatch, tmp_path) -> ScriptedLLM:
     ]
     build_and_save_index(REPO, docs, embeddings, overview="## Summary\nWidgets is a signing library.")
     return fake
+
+
+FIXTURE_FILES = {
+    "README.md": "# Gadgets\nA toolkit.\n",
+    "src/app.py": "def main():\n    return 1\n" * 20,
+    "src/util.py": "def helper(x):\n    return x * 2\n" * 10,
+    "docs/guide.md": "## Guide\nUse gadgets wisely.\n",
+    "config.json": '{"name": "gadgets"}',
+}
+
+
+@pytest.fixture
+def fake_clone(llm, monkeypatch, tmp_path):
+    """Replace git clone with a local fixture; `gate` lets a test pause the run right after cloning."""
+    gate = threading.Event()
+    gate.set()
+
+    def clone(repo_url, on_progress=None):
+        root = tmp_path / f"clone-{time.monotonic_ns()}"
+        for rel, content in FIXTURE_FILES.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        if on_progress:
+            on_progress("Receiving objects", 0.5)
+            on_progress("Receiving objects", 1.0)
+        assert gate.wait(10)
+        return str(root)
+
+    monkeypatch.setattr(qa_service, "clone_repo", clone)
+    yield gate
+    for job in list(index_jobs._jobs.values()):
+        job.cancel_event.set()
+    index_jobs._jobs.clear()

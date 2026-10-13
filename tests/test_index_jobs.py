@@ -1,4 +1,3 @@
-import threading
 import time
 
 import pytest
@@ -8,39 +7,9 @@ from git import GitCommandError
 from src.api.main import app
 from src.services import index_jobs, qa_service
 from src.vectorstore.faiss_store import index_exists
+from tests.conftest import FIXTURE_FILES as FILES
 
 REPO = "https://github.com/acme/gadgets"
-FILES = {
-    "README.md": "# Gadgets\nA toolkit.\n",
-    "src/app.py": "def main():\n    return 1\n" * 20,
-    "src/util.py": "def helper(x):\n    return x * 2\n" * 10,
-    "docs/guide.md": "## Guide\nUse gadgets wisely.\n",
-    "config.json": '{"name": "gadgets"}',
-}
-
-
-@pytest.fixture
-def fake_clone(llm, monkeypatch, tmp_path):
-    """Replace git clone with a local fixture; `gate` lets a test pause the run right after cloning."""
-    gate = threading.Event()
-    gate.set()
-
-    def clone(repo_url, on_progress=None):
-        root = tmp_path / f"clone-{time.monotonic_ns()}"
-        for rel, content in FILES.items():
-            path = root / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-        if on_progress:
-            on_progress("Receiving objects", 0.5)
-            on_progress("Receiving objects", 1.0)
-        assert gate.wait(10)
-        return str(root)
-
-    monkeypatch.setattr(qa_service, "clone_repo", clone)
-    return gate
-
-
 def wait_for(job_id: str, timeout: float = 15) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
