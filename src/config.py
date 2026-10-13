@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     # get_llm() raises a clear ConfigurationError when it's missing.
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
+    # Smaller, faster model for housekeeping calls (question rewriting, summaries, memory extraction)
+    groq_fast_model: str = "llama-3.1-8b-instant"
 
     # Embeddings
     openai_api_key: str | None = None
@@ -28,6 +30,16 @@ class Settings(BaseSettings):
 
     # Ingestion
     max_file_size_bytes: int = 1_000_000
+
+    # Memory (chat history, summaries, user memories, past Q&A recall)
+    memory_db_path: str = "data/memory.db"
+    history_recent_messages: int = 4  # unsummarized turns always kept verbatim
+    summarize_after_messages: int = 10  # fold older turns into the chat summary past this many
+    history_message_max_chars: int = 1200
+    related_qa_top_k: int = 2
+    related_qa_min_similarity: float = 0.55
+    auto_memory: bool = True  # learn user preferences from what they say
+    max_memories_per_user: int = 50
 
     # API: comma-separated origins allowed to call the backend from a browser
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

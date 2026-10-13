@@ -12,3 +12,7 @@ class InvalidRepoUrlError(ValueError):
 
 class ConfigurationError(RuntimeError):
     """Raised when required configuration (e.g. an API key) is missing."""
+
+
+class ChatNotFoundError(LookupError):
+    """Raised when a chat doesn't exist or belongs to another user."""

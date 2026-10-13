@@ -14,6 +14,22 @@ strictly in the repository's own content.
 5. Retrieves relevant chunks for a question and answers it with a Groq LLM,
    explicitly refusing to guess when the context doesn't contain the answer.
 
+## Memory
+
+Answers draw on several layers of memory, modelled on how assistants like Claude keep context:
+
+| Layer | What it does | Stored in |
+|---|---|---|
+| Recent turns | Follow-ups like "where is *that* tested?" are rewritten into a standalone question before searching, and recent turns are sent with the prompt | `data/memory.db` |
+| Running summary | Once a chat grows past `SUMMARIZE_AFTER_MESSAGES`, older turns are folded into a summary (in the background) | `data/memory.db` |
+| Saved chats | Every chat is persisted; reopen it from the sidebar and keep going | `data/memory.db` |
+| Repo overview | Generated once at index time (purpose, stack, layout) and included in every prompt, so big-picture questions work | `data/indexes/<id>/overview.md` |
+| User memory | Say "remember that …", add items in the Memory panel, or let it learn from what you mention about yourself | `data/memory.db` |
+| Past answers | Relevant Q&A from your other chats about the same repo is recalled as a hint | `data/memory.db` |
+
+There are no accounts yet: each browser gets an anonymous ID (sent as `X-User-Id`) that scopes its chats and
+memories. It separates users but is not authentication.
+
 ## Setup
 
 ```bash
@@ -50,7 +66,19 @@ in the backend `.env`.
 |--------|-----------|----------------------------------|-------------------------------------------------|
 | GET    | `/health` | –                                | `{"status": "ok"}`                              |
 | POST   | `/index`  | `{"repo_url", "force_reindex"?}` | `{"repo_url", "reused_existing", "num_chunks"}` |
-| POST   | `/query`  | `{"repo_url", "question"}`       | `{"answer", "sources"}` (404 if not indexed)    |
+| POST   | `/query`  | `{"repo_url", "question", "chat_id"?}` | `{"answer", "sources", "chat_id", "standalone_question", "memory_saved"}` |
+
+Chat and memory endpoints (all need an `X-User-Id` header): `GET /chats?repo_url=`, `GET /chats/{id}`,
+`DELETE /chats/{id}`, `GET /memories`, `POST /memories`, `DELETE /memories/{id}`, `DELETE /memories`.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests use a scripted fake LLM and fake embeddings, so they need no API keys or network.
 
 ### CLI
 

@@ -12,6 +12,7 @@ interface Props {
   disabled: boolean;
   onAsk: (question: string) => void;
   onIndexRequested: () => void;
+  onOpenMemory: () => void;
 }
 
 const EXAMPLES = [
@@ -21,7 +22,7 @@ const EXAMPLES = [
   "What are the main modules and how do they interact?",
 ];
 
-export default function Conversation({ repoUrl, messages, disabled, onAsk, onIndexRequested }: Props) {
+export default function Conversation({ repoUrl, messages, disabled, onAsk, onIndexRequested, onOpenMemory }: Props) {
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -73,6 +74,9 @@ export default function Conversation({ repoUrl, messages, disabled, onAsk, onInd
                     </button>
                   ))}
                 </div>
+                <p className="tip">
+                  Follow-up questions keep context. Say <code>remember that …</code> to teach me how you like answers.
+                </p>
               </>
             ) : (
               <p>Point me at a public GitHub repository and ask how its code works.</p>
@@ -81,7 +85,13 @@ export default function Conversation({ repoUrl, messages, disabled, onAsk, onInd
         )}
 
         {messages.map((m) => (
-          <MessageView key={m.id} message={m} repoUrl={repoUrl} onIndexRequested={onIndexRequested} />
+          <MessageView
+            key={m.id}
+            message={m}
+            repoUrl={repoUrl}
+            onIndexRequested={onIndexRequested}
+            onOpenMemory={onOpenMemory}
+          />
         ))}
         <div ref={endRef} />
       </div>
@@ -122,10 +132,12 @@ function MessageView({
   message,
   repoUrl,
   onIndexRequested,
+  onOpenMemory,
 }: {
   message: ChatMessage;
   repoUrl: string | null;
   onIndexRequested: () => void;
+  onOpenMemory: () => void;
 }) {
   if (message.role === "user") {
     return (
@@ -145,7 +157,18 @@ function MessageView({
 
   return (
     <div className={message.error ? "msg msg-assistant msg-error" : "msg msg-assistant"}>
+      {message.searchedFor && (
+        <p className="searched-for" title="Your follow-up was rewritten using the conversation before searching">
+          Searched for: {message.searchedFor}
+        </p>
+      )}
       {message.error ? <p>{message.text}</p> : <Markdown>{message.text}</Markdown>}
+
+      {message.memorySaved && (
+        <button type="button" className="memory-badge" onClick={onOpenMemory}>
+          Saved to memory · View
+        </button>
+      )}
 
       {message.notIndexed && (
         <button type="button" className="btn btn-secondary" onClick={onIndexRequested}>

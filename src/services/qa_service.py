@@ -10,9 +10,10 @@ from src.ingestion.document_loader import load_repo_documents
 from src.ingestion.repo_loader import clone_repo, cleanup_repo
 from src.ingestion.repo_url import normalize_repo_url
 from src.processing.splitter import split_documents
-from src.rag.qa_chain import answer_question, build_qa_chain
+from src.rag.overview import build_overview
+from src.rag.qa_chain import generate_answer, sources_of
 from src.services.exceptions import RepoIndexingError, RepoNotIndexedError
-from src.vectorstore.faiss_store import build_and_save_index, index_exists, load_index
+from src.vectorstore.faiss_store import build_and_save_index, index_exists, load_index, load_overview
 
 # One lock per repo so concurrent /index calls for the same repo don't clone and write twice.
 _index_locks: defaultdict[str, Lock] = defaultdict(Lock)
@@ -52,20 +53,20 @@ def index_repository(repo_url: str, force_reindex: bool = False) -> IndexResult:
                 raise RepoIndexingError(f"No indexable source/doc files found in repository: {repo_url}")
 
             chunks = split_documents(documents, settings.chunk_size, settings.chunk_overlap)
-            build_and_save_index(repo_url, chunks, get_embeddings())
+            overview = build_overview(documents)
+            build_and_save_index(repo_url, chunks, get_embeddings(), overview=overview)
             return IndexResult(repo_url=repo_url, reused_existing=False, num_chunks=len(chunks))
         finally:
             cleanup_repo(local_path)
 
 
 def ask_question(repo_url: str, question: str) -> AnswerResult:
-    """Answer a question about a previously indexed repo."""
+    """Answer a one-off question about a previously indexed repo (no chat memory; used by the CLI)."""
     repo_url = normalize_repo_url(repo_url)
     if not index_exists(repo_url):
         raise RepoNotIndexedError(f"Repository has not been indexed yet: {repo_url}")
 
-    embeddings = get_embeddings()
-    vector_store = load_index(repo_url, embeddings)
-    chain = build_qa_chain(vector_store, settings.retriever_top_k)
-    result = answer_question(chain, question)
-    return AnswerResult(answer=result["answer"], sources=result["sources"])
+    vector_store = load_index(repo_url, get_embeddings())
+    docs = vector_store.similarity_search(question, k=settings.retriever_top_k)
+    answer = generate_answer(question, docs, overview=load_overview(repo_url))
+    return AnswerResult(answer=answer, sources=sources_of(docs))

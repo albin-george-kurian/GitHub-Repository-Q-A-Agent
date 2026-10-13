@@ -15,4 +15,8 @@ export interface ChatMessage {
   error?: boolean;
   /** Set when the backend reported the repo isn't indexed, so the UI can offer to index it. */
   notIndexed?: boolean;
+  /** The rewritten, standalone question the backend searched with (follow-ups only). */
+  searchedFor?: string | null;
+  /** Fact stored by an explicit "remember …" message. */
+  memorySaved?: string | null;
 }

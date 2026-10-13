@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 import { isGithubRepoUrl, repoLabel } from "../repoUrl";
 import type { IndexStatus } from "../types";
@@ -10,6 +10,8 @@ interface Props {
   onIndex: (url: string) => void;
   onSelectRecent: (url: string) => void;
   onRemoveRecent: (url: string) => void;
+  /** Rendered under the status card (the active repo's chat list). */
+  children?: ReactNode;
 }
 
 function useElapsedSeconds(startedAt: number | null): number {
@@ -22,7 +24,15 @@ function useElapsedSeconds(startedAt: number | null): number {
   return startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
 }
 
-export default function RepoPanel({ activeRepo, status, recentRepos, onIndex, onSelectRecent, onRemoveRecent }: Props) {
+export default function RepoPanel({
+  activeRepo,
+  status,
+  recentRepos,
+  onIndex,
+  onSelectRecent,
+  onRemoveRecent,
+  children,
+}: Props) {
   const [url, setUrl] = useState(activeRepo ?? "");
   const indexing = status.kind === "indexing";
   const elapsed = useElapsedSeconds(indexing ? status.startedAt : null);
@@ -68,6 +78,8 @@ export default function RepoPanel({ activeRepo, status, recentRepos, onIndex, on
       </form>
 
       <StatusCard status={status} elapsed={elapsed} activeRepo={activeRepo} />
+
+      {children}
 
       {recentRepos.length > 0 && (
         <section className="recent">

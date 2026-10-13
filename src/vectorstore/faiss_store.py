@@ -11,6 +11,7 @@ from langchain_core.embeddings import Embeddings
 from src.config import settings
 
 _INDEX_FILE = "index.faiss"
+_OVERVIEW_FILE = "overview.md"
 
 # Loaded indexes, keyed by path, so queries don't re-read the index from disk every time.
 _loaded: dict[str, FAISS] = {}
@@ -31,7 +32,9 @@ def index_exists(repo_url: str) -> bool:
     return os.path.isfile(os.path.join(get_index_path(repo_url), _INDEX_FILE))
 
 
-def build_and_save_index(repo_url: str, chunks: list[Document], embeddings: Embeddings) -> FAISS:
+def build_and_save_index(
+    repo_url: str, chunks: list[Document], embeddings: Embeddings, overview: str | None = None
+) -> FAISS:
     vector_store = FAISS.from_documents(chunks, embeddings)
     index_path = get_index_path(repo_url)
 
@@ -40,6 +43,9 @@ def build_and_save_index(repo_url: str, chunks: list[Document], embeddings: Embe
     tmp_path = tempfile.mkdtemp(prefix=".tmp_", dir=settings.index_store_dir)
     try:
         vector_store.save_local(tmp_path)
+        if overview:
+            with open(os.path.join(tmp_path, _OVERVIEW_FILE), "w", encoding="utf-8") as f:
+                f.write(overview)
         shutil.rmtree(index_path, ignore_errors=True)
         os.replace(tmp_path, index_path)
     except Exception:
@@ -58,3 +64,12 @@ def load_index(repo_url: str, embeddings: Embeddings) -> FAISS:
             # Indexes are only ever written by this app, so unpickling the docstore is safe here.
             _loaded[index_path] = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
         return _loaded[index_path]
+
+
+def load_overview(repo_url: str) -> str | None:
+    """The repo overview written at index time, or None for indexes built before overviews existed."""
+    try:
+        with open(os.path.join(get_index_path(repo_url), _OVERVIEW_FILE), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None

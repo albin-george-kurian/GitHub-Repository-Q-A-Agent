@@ -33,3 +33,27 @@ export function removeRecentRepo(url: string, current: string[]): string[] {
   }
   return next;
 }
+
+const USER_ID_KEY = "repo-qa:user-id";
+let memoryOnlyUserId: string | null = null;
+
+function newUserId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/** Anonymous per-browser ID that scopes chats and memories on the server (not authentication). */
+export function getUserId(): string {
+  try {
+    let id = localStorage.getItem(USER_ID_KEY);
+    if (!id) {
+      id = newUserId();
+      localStorage.setItem(USER_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    // Storage blocked: keep one ID for this page load so the session still works.
+    memoryOnlyUserId ??= newUserId();
+    return memoryOnlyUserId;
+  }
+}
