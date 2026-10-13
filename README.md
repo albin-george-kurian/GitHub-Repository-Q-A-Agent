@@ -25,6 +25,35 @@ cp .env.example .env      # then fill in GROQ_API_KEY (required)
 
 ## Usage
 
+### Web app
+
+Run the API and the frontend in two terminals, both from the project root:
+
+```bash
+# 1. backend (http://127.0.0.1:8000, interactive docs at /docs)
+uvicorn src.api.main:app --reload
+
+# 2. frontend (http://localhost:5173)
+cd frontend
+npm install
+npm run dev
+```
+
+In dev, the Vite server proxies `/api/*` to the backend, so no extra setup is
+needed. For a production build (`npm run build`) served from another origin, set
+`VITE_API_BASE_URL` in `frontend/.env` and add that origin to `CORS_ORIGINS`
+in the backend `.env`.
+
+### API
+
+| Method | Path      | Body                             | Returns                                         |
+|--------|-----------|----------------------------------|-------------------------------------------------|
+| GET    | `/health` | –                                | `{"status": "ok"}`                              |
+| POST   | `/index`  | `{"repo_url", "force_reindex"?}` | `{"repo_url", "reused_existing", "num_chunks"}` |
+| POST   | `/query`  | `{"repo_url", "question"}`       | `{"answer", "sources"}` (404 if not indexed)    |
+
+### CLI
+
 ```bash
 python scripts/run_pipeline.py <repo_url> "<question>"
 
@@ -37,5 +66,7 @@ python scripts/run_pipeline.py <repo_url> "<question>" --force-reindex
 
 ## Status
 
-**Stage 1 (Foundation/MVP)** — CLI-based end-to-end RAG pipeline. A FastAPI
-backend (Stage 2) and further improvements (Stage 3) are planned next.
+- **Stage 1 (Foundation/MVP)**: CLI-based end-to-end RAG pipeline.
+- **Stage 2 (Backend API)**: FastAPI `/index` and `/query` endpoints.
+- **Frontend**: React + TypeScript (Vite) UI in [`frontend/`](frontend/).
+- **Stage 3**: further improvements, planned.
