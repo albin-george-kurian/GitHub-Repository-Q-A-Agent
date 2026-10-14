@@ -43,6 +43,8 @@ export default function App() {
   // Latest active repo, for async callbacks that must not apply results to a repo the user left.
   const activeRepoRef = useRef<string | null>(null);
   activeRepoRef.current = activeRepo;
+  // The answer currently streaming, so Stop can abort it.
+  const streamRef = useRef<AbortController | null>(null);
 
   const noteNetworkError = useCallback((err: unknown) => {
     if (err instanceof ApiError && err.status === 0) setBackendDown(true);
@@ -191,44 +193,85 @@ export default function App() {
       const repo = activeRepo;
       const key = viewKey.current;
       const pendingId = newId();
+      const controller = new AbortController();
+      streamRef.current = controller;
       setMessages((msgs) => [
         ...msgs,
         { id: newId(), role: "user", text: question },
         { id: pendingId, role: "assistant", text: "", pending: true },
       ]);
 
-      let reply: ChatMessage;
+      // Updates to the reply are dropped once the user has moved to another chat; the server still
+      // finishes and saves the answer there.
+      const update = (change: (m: ChatMessage) => ChatMessage) => {
+        if (key === viewKey.current) setMessages((msgs) => msgs.map((m) => (m.id === pendingId ? change(m) : m)));
+      };
+      // Words arrive faster than the screen refreshes, so render at most once per frame.
+      let text = "";
+      let frame = 0;
+      const flush = () => {
+        frame = 0;
+        update((m) => ({ ...m, text }));
+      };
+
       try {
-        const res = await api.query({ repo_url: repo, question, chat_id: activeChatId });
-        reply = {
+        const res = await api.queryStream(
+          { repo_url: repo, question, chat_id: activeChatId },
+          (event) => {
+            if (event.type === "start") {
+              if (key === viewKey.current) setActiveChatId(event.chat_id);
+            } else if (event.type === "status") {
+              update((m) => ({ ...m, stage: event.stage }));
+            } else if (event.type === "sources") {
+              update((m) => ({ ...m, stage: "writing", sources: event.sources, searchedFor: event.standalone_question }));
+            } else {
+              text += event.text;
+              frame ||= requestAnimationFrame(flush);
+            }
+          },
+          controller.signal,
+        );
+        cancelAnimationFrame(frame);
+        update(() => ({
           id: pendingId,
           role: "assistant",
           text: res.answer,
           sources: res.sources,
           searchedFor: res.standalone_question,
           memorySaved: res.memory_saved,
-        };
+        }));
         if (key === viewKey.current) setActiveChatId(res.chat_id);
         refreshChats(repo);
         // Preferences are learned in the background after the reply; pick them up shortly after.
         if (res.memory_saved) refreshMemories();
         else window.setTimeout(refreshMemories, 4000);
       } catch (err) {
-        reply = {
-          id: pendingId,
-          role: "assistant",
-          text: err instanceof Error ? err.message : String(err),
-          error: true,
-          notIndexed: err instanceof ApiError && err.code === "repo_not_indexed",
-        };
-        noteNetworkError(err);
-      }
-      if (key === viewKey.current) {
-        setMessages((msgs) => msgs.map((m) => (m.id === pendingId ? reply : m)));
+        cancelAnimationFrame(frame);
+        if (controller.signal.aborted) {
+          // Stopped: keep what arrived. The server saved the same text, so the chat stays in sync.
+          update((m) => ({ ...m, text, pending: false, stage: undefined, stopped: true }));
+          refreshChats(repo);
+        } else {
+          update(() => ({
+            id: pendingId,
+            role: "assistant",
+            text: err instanceof Error ? err.message : String(err),
+            error: true,
+            notIndexed: err instanceof ApiError && err.code === "repo_not_indexed",
+          }));
+          noteNetworkError(err);
+        }
+      } finally {
+        if (streamRef.current === controller) streamRef.current = null;
       }
     },
     [activeRepo, activeChatId, refreshChats, refreshMemories, noteNetworkError],
   );
+
+  const stopAnswer = useCallback(() => streamRef.current?.abort(), []);
+  const reindexActive = useCallback(() => {
+    if (activeRepo) indexRepo(activeRepo);
+  }, [activeRepo, indexRepo]);
 
   const closeMemory = useCallback(() => setMemoryOpen(false), []);
   const openMemory = useCallback(() => setMemoryOpen(true), []);
@@ -299,7 +342,7 @@ export default function App() {
             failure={status.kind === "failed" ? { message: status.message, cancelled: status.cancelled } : null}
             cancelling={cancelling}
             onCancel={cancelIndex}
-            onRetry={() => indexRepo(activeRepo)}
+            onRetry={reindexActive}
           />
         ) : (
           <Conversation
@@ -307,7 +350,8 @@ export default function App() {
             messages={messages}
             readySummary={status.kind === "ready" ? status.summary : null}
             onAsk={ask}
-            onIndexRequested={() => activeRepo && indexRepo(activeRepo)}
+            onStop={stopAnswer}
+            onIndexRequested={reindexActive}
             onOpenMemory={openMemory}
           />
         )}

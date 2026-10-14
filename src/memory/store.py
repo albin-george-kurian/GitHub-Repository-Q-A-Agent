@@ -75,15 +75,19 @@ def get_chat(user_id: str, chat_id: str) -> Chat | None:
 
 
 def list_chats(user_id: str, repo_url: str | None = None, limit: int = 50) -> list[Chat]:
+    """Chats with at least one message; one whose first answer failed or was stopped early stays hidden."""
+    has_messages = "EXISTS (SELECT 1 FROM messages m WHERE m.chat_id = chats.id)"
     with connect() as conn:
         if repo_url:
             rows = conn.execute(
-                "SELECT * FROM chats WHERE user_id = ? AND repo_url = ? ORDER BY updated_at DESC LIMIT ?",
+                f"SELECT * FROM chats WHERE user_id = ? AND repo_url = ? AND {has_messages}"
+                " ORDER BY updated_at DESC LIMIT ?",
                 (user_id, repo_url, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM chats WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?", (user_id, limit)
+                f"SELECT * FROM chats WHERE user_id = ? AND {has_messages} ORDER BY updated_at DESC LIMIT ?",
+                (user_id, limit),
             ).fetchall()
     return [_chat(r) for r in rows]
 

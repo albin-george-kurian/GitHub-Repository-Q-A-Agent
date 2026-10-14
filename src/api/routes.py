@@ -1,4 +1,7 @@
 import logging
+from collections.abc import Generator
+from contextlib import closing
+from dataclasses import asdict, dataclass
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 
@@ -14,6 +17,7 @@ from src.api.schemas import (
     QueryRequest,
     QueryResponse,
 )
+from src.api.streaming import EventStream, sse_event
 from src.config import settings
 from src.ingestion.repo_url import normalize_repo_url
 from src.memory import store
@@ -66,36 +70,79 @@ def cancel_index_job(job_id: str) -> IndexJobOut:
     return IndexJobOut(**index_jobs.snapshot(job))
 
 
+def _query_error(exc: Exception, repo_url: str) -> tuple[int, str, str | None]:
+    """Status, message and error code for a failed question."""
+    if isinstance(exc, InvalidRepoUrlError):
+        return 400, str(exc), None
+    if isinstance(exc, RepoNotIndexedError):
+        return 404, str(exc), "repo_not_indexed"
+    if isinstance(exc, ChatNotFoundError):
+        return 404, str(exc), "chat_not_found"
+    if isinstance(exc, ConfigurationError):
+        return 503, str(exc), "not_configured"
+    if message := rejected_key_message(exc):
+        return 503, message, "not_configured"
+    logger.exception("Query failed for %s", repo_url)
+    return 502, f"LLM or embedding provider error: {exc}", None
+
+
+def _query_http_error(exc: Exception, repo_url: str) -> HTTPException:
+    status, detail, code = _query_error(exc, repo_url)
+    return HTTPException(status_code=status, detail=detail, headers={"X-Error-Code": code} if code else None)
+
+
 @router.post("/query", response_model=QueryResponse)
 def query_repo(
     request: QueryRequest, background: BackgroundTasks, user_id: str = Depends(get_user_id)
 ) -> QueryResponse:
     try:
         turn = chat_service.chat(user_id, str(request.repo_url), request.question, request.chat_id)
-    except InvalidRepoUrlError as exc:
-        raise _error(400, exc) from exc
-    except RepoNotIndexedError as exc:
-        raise _error(404, exc, "repo_not_indexed") from exc
-    except ChatNotFoundError as exc:
-        raise _error(404, exc, "chat_not_found") from exc
-    except ConfigurationError as exc:
-        raise _error(503, exc, "not_configured") from exc
     except Exception as exc:
-        if message := rejected_key_message(exc):
-            raise HTTPException(status_code=503, detail=message, headers={"X-Error-Code": "not_configured"}) from exc
-        logger.exception("Query failed for %s", request.repo_url)
-        raise HTTPException(status_code=502, detail=f"LLM or embedding provider error: {exc}") from exc
+        raise _query_http_error(exc, str(request.repo_url)) from exc
 
     if turn.memory_saved is None:
         background.add_task(chat_service.after_turn, user_id, turn.chat_id, request.question)
 
-    return QueryResponse(
-        answer=turn.answer,
-        sources=turn.sources,
-        chat_id=turn.chat_id,
-        standalone_question=turn.standalone_question,
-        memory_saved=turn.memory_saved,
-    )
+    return QueryResponse(**asdict(turn))
+
+
+@dataclass
+class _StreamedTurn:
+    user_id: str
+    request: QueryRequest
+    events: Generator[chat_service.ChatEvent]
+
+
+def _start_streamed_turn(request: QueryRequest, user_id: str = Depends(get_user_id)) -> _StreamedTurn:
+    # Runs before the stream opens, so request errors still get their HTTP status and X-Error-Code.
+    try:
+        events = chat_service.start_chat(user_id, str(request.repo_url), request.question, request.chat_id)
+    except Exception as exc:
+        raise _query_http_error(exc, str(request.repo_url)) from exc
+    return _StreamedTurn(user_id, request, events)
+
+
+@router.post("/query/stream", response_class=EventStream)
+def query_repo_stream(background: BackgroundTasks, turn: _StreamedTurn = Depends(_start_streamed_turn)) -> EventStream:
+    """Like POST /query, but streams the answer as Server-Sent Events:
+
+    `start` {chat_id} → `status` {stage}… → `sources` {sources, standalone_question} → `delta` {text}… →
+    `done` (same fields as /query). A failure after the stream has started arrives as `error`
+    {status, detail, code}. Closing the connection stops the answer; the text so far is kept in the chat."""
+
+    def events() -> Generator[bytes]:
+        try:
+            # When the response ends early (client gone), closing the turn saves the text written so far.
+            with closing(turn.events) as turn_events:
+                for event in turn_events:
+                    yield sse_event(event.event, asdict(event))
+                    if isinstance(event, chat_service.ChatTurn) and event.memory_saved is None:
+                        background.add_task(chat_service.after_turn, turn.user_id, event.chat_id, turn.request.question)
+        except Exception as exc:
+            status, detail, code = _query_error(exc, str(turn.request.repo_url))
+            yield sse_event("error", {"status": status, "detail": detail, "code": code})
+
+    return EventStream(events(), background)
 
 
 # ---------- Chats ----------

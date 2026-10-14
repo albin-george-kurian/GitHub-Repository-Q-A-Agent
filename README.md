@@ -69,6 +69,14 @@ in the backend `.env`.
 | GET    | `/index/jobs/{id}`           | –                                      | Job status: steps, progress (0–1), stats, language breakdown, activity log |
 | POST   | `/index/jobs/{id}/cancel`    | –                                      | `202` job; stops at the next step or embedding batch                       |
 | POST   | `/query`                     | `{"repo_url", "question", "chat_id"?}` | `{"answer", "sources", "chat_id", "standalone_question", "memory_saved"}`  |
+| POST   | `/query/stream`              | same as `/query`                       | The answer as it is written, as Server-Sent Events (below)                 |
+
+`/query/stream` sends `start` `{chat_id}`, then `status` `{stage}` (`rewriting` for follow-ups, `searching`),
+`sources` `{sources, standalone_question}`, a `delta` `{text}` per piece of the answer, and finally `done` with
+the same fields as `/query`. Request errors (repo not indexed, unknown chat, missing key) are returned as normal
+HTTP errors before the stream starts; a failure mid-answer arrives as an `error` `{status, detail, code}` event.
+Closing the connection stops the model right away, and the text written so far is kept in the chat. The web app
+uses this endpoint, with a Stop button while an answer is being written.
 
 Indexing runs in the background (at most two repositories at once) so the UI can show live progress:
 clone → scan → chunk → embed → overview. Jobs are kept in memory; a cancelled or failed run never leaves a

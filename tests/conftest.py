@@ -1,14 +1,15 @@
+import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
 from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
 from src.config import settings
@@ -33,6 +34,12 @@ class ScriptedLLM(BaseChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
         self.calls.append(list(messages))
         return ChatResult(generations=[ChatGeneration(message=AIMessage(self.responder(messages)))])
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs: Any) -> Iterator[ChatGenerationChunk]:
+        """Streams word by word, after an empty chunk like the one reasoning models send first."""
+        self.calls.append(list(messages))
+        for piece in ["", *re.findall(r"\S+\s*", self.responder(messages))]:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=piece))
 
     def calls_for(self, task: str) -> list[list[BaseMessage]]:
         return [c for c in self.calls if task in c[0].content]

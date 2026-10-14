@@ -11,14 +11,16 @@ Memory layers, mirroring how an assistant like Claude keeps context:
 
 import logging
 import re
+from collections.abc import Generator
 from dataclasses import dataclass
+from typing import ClassVar, Literal
 
 from src.config import settings
 from src.embeddings.embedding_provider import get_embeddings
 from src.ingestion.repo_url import normalize_repo_url
 from src.llm.groq_client import get_llm
 from src.memory import llm_tasks, store
-from src.rag.qa_chain import generate_answer, sources_of
+from src.rag.qa_chain import sources_of, stream_answer
 from src.services.exceptions import ChatNotFoundError, RepoNotIndexedError
 from src.vectorstore.faiss_store import index_exists, load_index, load_overview
 
@@ -29,13 +31,49 @@ _REMEMBER = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s*[:,-]?\s+(?P<f
 _TITLE_MAX = 60
 
 
+# ---------- Events of a streamed turn, in order. `event` is the name used on the wire (SSE). ----------
+
+
+@dataclass
+class Started:
+    chat_id: str
+    event: ClassVar[str] = "start"
+
+
+@dataclass
+class Status:
+    stage: Literal["rewriting", "searching"]
+    event: ClassVar[str] = "status"
+
+
+@dataclass
+class Retrieved:
+    """The code search is done; the answer is about to be written from these files."""
+
+    sources: list[str]
+    standalone_question: str | None
+    event: ClassVar[str] = "sources"
+
+
+@dataclass
+class Delta:
+    text: str
+    event: ClassVar[str] = "delta"
+
+
 @dataclass
 class ChatTurn:
+    """The finished turn, always the last event."""
+
     chat_id: str
     answer: str
     sources: list[str]
     standalone_question: str | None  # set when a follow-up was rewritten before searching
     memory_saved: str | None  # set when the message was an explicit "remember …"
+    event: ClassVar[str] = "done"
+
+
+ChatEvent = Started | Status | Retrieved | Delta | ChatTurn
 
 
 def _title_for(question: str) -> str:
@@ -52,17 +90,37 @@ def _resolve_chat(user_id: str, repo_url: str, chat_id: str | None, question: st
     return chat
 
 
-def chat(user_id: str, repo_url: str, question: str, chat_id: str | None = None) -> ChatTurn:
+def start_chat(user_id: str, repo_url: str, question: str, chat_id: str | None = None) -> Generator[ChatEvent]:
+    """Check the request, then return the turn as a stream of events ending with the ChatTurn.
+
+    Request problems (repo not indexed, unknown chat, missing LLM key) are raised here, before
+    anything streams, so callers can still report them as ordinary errors. Closing the generator
+    early stops the answer and saves the text written so far."""
     repo_url = normalize_repo_url(repo_url)
     if not index_exists(repo_url):
         raise RepoNotIndexedError(f"Repository has not been indexed yet: {repo_url}")
 
     remember = _REMEMBER.match(question)
     if remember:
-        return _remember(user_id, repo_url, chat_id, question, remember.group("fact").strip())
+        return _just(_remember(user_id, repo_url, chat_id, question, remember.group("fact").strip()))
 
     get_llm()  # fail fast with a clear ConfigurationError before doing any work
     conversation = _resolve_chat(user_id, repo_url, chat_id, question)
+    return _answer(user_id, repo_url, question, conversation)
+
+
+def chat(user_id: str, repo_url: str, question: str, chat_id: str | None = None) -> ChatTurn:
+    """The whole turn at once, for callers that don't stream."""
+    *_, turn = start_chat(user_id, repo_url, question, chat_id)
+    return turn
+
+
+def _just(turn: ChatTurn) -> Generator[ChatEvent]:
+    yield turn
+
+
+def _answer(user_id: str, repo_url: str, question: str, conversation: store.Chat) -> Generator[ChatEvent]:
+    yield Started(conversation.id)
 
     # Short-term memory: turns not yet folded into the summary. Compaction normally keeps this short;
     # the slice is a hard cap in case background summarization keeps failing.
@@ -70,6 +128,7 @@ def chat(user_id: str, repo_url: str, question: str, chat_id: str | None = None)
     history = history[-(settings.summarize_after_messages + 2) :]
     standalone = question
     if history or conversation.summary:
+        yield Status("rewriting")
         try:
             standalone = llm_tasks.condense_question(
                 question, history[-settings.history_recent_messages * 2 :], conversation.summary
@@ -78,6 +137,7 @@ def chat(user_id: str, repo_url: str, question: str, chat_id: str | None = None)
             logger.exception("Question rewrite failed; searching with the original question")
 
     # Embed once; reuse the vector for code retrieval, past-Q&A recall and storage.
+    yield Status("searching")
     embeddings = get_embeddings()
     query_vector = embeddings.embed_query(standalone)
     docs = load_index(repo_url, embeddings).similarity_search_by_vector(query_vector, k=settings.retriever_top_k)
@@ -90,37 +150,50 @@ def chat(user_id: str, repo_url: str, question: str, chat_id: str | None = None)
         top_k=settings.related_qa_top_k,
         min_similarity=settings.related_qa_min_similarity,
     )
-
-    answer = generate_answer(
-        question,
-        docs,
-        overview=load_overview(repo_url),
-        memories=[m.content for m in store.list_memories(user_id)],
-        related=related,
-        summary=conversation.summary,
-        history=history,
-        history_max_chars=settings.history_message_max_chars,
-    )
     sources = sources_of(docs)
+    rewritten = standalone if standalone != question else None
+    yield Retrieved(sources, rewritten)
 
-    # Persist only after a successful answer, so failed calls don't leave half a turn behind.
-    store.add_message(conversation.id, "user", question)
-    store.add_message(
-        conversation.id,
-        "assistant",
-        answer,
-        sources=sources,
-        standalone_question=standalone,
-        embedding=query_vector,
-        embedding_model=settings.embedding_model_id,
-    )
-    return ChatTurn(
-        chat_id=conversation.id,
-        answer=answer,
-        sources=sources,
-        standalone_question=standalone if standalone != question else None,
-        memory_saved=None,
-    )
+    def save(answer: str) -> None:
+        store.add_message(conversation.id, "user", question)
+        store.add_message(
+            conversation.id,
+            "assistant",
+            answer,
+            sources=sources,
+            standalone_question=standalone,
+            embedding=query_vector,
+            embedding_model=settings.embedding_model_id,
+        )
+
+    pieces: list[str] = []
+    try:
+        for piece in stream_answer(
+            question,
+            docs,
+            overview=load_overview(repo_url),
+            memories=[m.content for m in store.list_memories(user_id)],
+            related=related,
+            summary=conversation.summary,
+            history=history,
+            history_max_chars=settings.history_message_max_chars,
+        ):
+            pieces.append(piece)
+            yield Delta(piece)
+    except GeneratorExit:
+        # The client stopped the answer (or disconnected): keep what they already saw, so the saved
+        # chat matches their screen and follow-ups have the context.
+        if "".join(pieces).strip():
+            try:
+                save("".join(pieces))
+            except Exception:
+                logger.exception("Saving the stopped answer in chat %s failed", conversation.id)
+        raise
+
+    # Otherwise persist only after a successful answer, so failed calls don't leave half a turn behind.
+    answer = "".join(pieces)
+    save(answer)
+    yield ChatTurn(conversation.id, answer, sources, rewritten, None)
 
 
 def _remember(user_id: str, repo_url: str, chat_id: str | None, question: str, fact: str) -> ChatTurn:

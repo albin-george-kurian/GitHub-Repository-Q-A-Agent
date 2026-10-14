@@ -52,6 +52,13 @@ export interface QueryResponse {
   memory_saved: string | null;
 }
 
+/** Events of POST /query/stream before the final `done` (which carries a QueryResponse). */
+export type StreamEvent =
+  | { type: "start"; chat_id: string }
+  | { type: "status"; stage: "rewriting" | "searching" }
+  | { type: "sources"; sources: string[]; standalone_question: string | null }
+  | { type: "delta"; text: string };
+
 export interface ChatSummary {
   id: string;
   repo_url: string;
@@ -106,27 +113,81 @@ function extractDetail(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
+const UNREACHABLE = "Could not reach the backend. Is the API server running?";
+
+async function send(path: string, init?: RequestInit): Promise<Response> {
   try {
-    res = await fetch(`${BASE_URL}${path}`, {
+    return await fetch(`${BASE_URL}${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", "X-User-Id": getUserId(), ...init?.headers },
     });
-  } catch {
-    throw new ApiError(0, "Could not reach the backend. Is the API server running?");
+  } catch (err) {
+    if (init?.signal?.aborted) throw err; // a deliberate stop, not a network problem
+    throw new ApiError(0, UNREACHABLE);
   }
+}
 
-  if (res.status === 204) return undefined as T;
+async function errorFrom(res: Response): Promise<ApiError> {
   const body: unknown = await res.json().catch(() => null);
-  if (!res.ok) {
-    const code = res.headers.get("X-Error-Code") as ErrorCode | null;
-    throw new ApiError(res.status, extractDetail(body, `Request failed with status ${res.status}`), code);
-  }
-  return body as T;
+  const code = res.headers.get("X-Error-Code") as ErrorCode | null;
+  return new ApiError(res.status, extractDetail(body, `Request failed with status ${res.status}`), code);
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await send(path, init);
+  if (res.status === 204) return undefined as T;
+  if (!res.ok) throw await errorFrom(res);
+  return (await res.json().catch(() => null)) as T;
 }
 
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
+
+/**
+ * Ask a question and stream the answer (Server-Sent Events over a POST, so not EventSource).
+ * Calls onEvent as it arrives and resolves with the finished turn. Aborting `signal` stops the
+ * answer; the promise then rejects with the AbortError.
+ */
+async function queryStream(
+  req: QueryRequest,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<QueryResponse> {
+  const res = await send("/query/stream", { ...json("POST", req), signal });
+  if (!res.ok || !res.body) throw await errorFrom(res);
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    let chunk: ReadableStreamReadResult<string>;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new ApiError(0, "The connection dropped before the answer finished.");
+    }
+    if (chunk.done) break;
+    buffer += chunk.value;
+
+    let end: number;
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      let name = "message";
+      const data: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) name = line.slice(7);
+        else if (line.startsWith("data: ")) data.push(line.slice(6));
+        // lines starting with ":" are keep-alive comments
+      }
+      if (data.length === 0) continue;
+      const payload = JSON.parse(data.join("\n"));
+      if (name === "done") return payload as QueryResponse;
+      if (name === "error") throw new ApiError(payload.status ?? 502, payload.detail, payload.code ?? null);
+      onEvent({ type: name, ...payload } as StreamEvent);
+    }
+  }
+  throw new ApiError(0, "The connection closed before the answer finished.");
+}
 
 export const api = {
   health: () => request<{ status: string }>("/health"),
@@ -135,6 +196,7 @@ export const api = {
   cancelIndexJob: (id: string) =>
     request<IndexJob>(`/index/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   query: (req: QueryRequest) => request<QueryResponse>("/query", json("POST", req)),
+  queryStream,
 
   listChats: (repoUrl: string) => request<ChatSummary[]>(`/chats?repo_url=${encodeURIComponent(repoUrl)}`),
   getChat: (id: string) => request<ChatDetail>(`/chats/${encodeURIComponent(id)}`),
